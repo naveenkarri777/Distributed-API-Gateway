@@ -1,0 +1,12 @@
+# docker/grafana/provisioning/dashboards/dashboards.yml
+apiVersion: 1
+
+providers:
+  - name: 'API Gateway Dashboards'
+    orgId: 1
+    folder: 'API Gateway'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

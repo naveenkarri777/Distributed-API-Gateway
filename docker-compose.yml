@@ -1,0 +1,220 @@
+# =============================================================================
+# Distributed Rate Limiter & API Gateway Proxy - Full Ecosystem Stack
+#
+# Ports exposed on host:
+#   - 3000: Load Balancer (Public entrypoint to the entire system)
+#   - 3001: Gateway Instance 1 (Internal direct access + /metrics)
+#   - 3002: Gateway Instance 2 (Internal direct access + /metrics)
+#   - 4001: User Service
+#   - 4002: Order Service
+#   - 4003: Payment Service
+#   - 6379: Redis (Shared Distributed Rate Limiting Store)
+#   - 9090: Prometheus UI (Scrapes :3001/metrics & :3002/metrics)
+#   - 3005: Grafana Dashboard (Pre-provisioned with Prometheus & Gateway Dashboard)
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Distributed Storage: Redis
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: gateway-redis
+    ports:
+      - '6379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 3s
+      retries: 5
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 2. Upstream Microservices
+  # ---------------------------------------------------------------------------
+  user-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: user-service
+    command: ['npx', 'tsx', 'services/user-service/index.ts']
+    environment:
+      USER_SERVICE_PORT: 4001
+    ports:
+      - '4001:4001'
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+  order-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: order-service
+    command: ['npx', 'tsx', 'services/order-service/index.ts']
+    environment:
+      ORDER_SERVICE_PORT: 4002
+    ports:
+      - '4002:4002'
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: payment-service
+    command: ['npx', 'tsx', 'services/payment-service/index.ts']
+    environment:
+      PAYMENT_SERVICE_PORT: 4003
+    ports:
+      - '4003:4003'
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 3. Distributed API Gateways (Horizontally Scaled)
+  # ---------------------------------------------------------------------------
+  gateway-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gateway-1
+    command: ['npx', 'tsx', 'src/server.ts']
+    environment:
+      GATEWAY_PORT: 3001
+      GATEWAY_INSTANCE_NAME: Gateway-1
+      REDIS_URL: redis://redis:6379
+      USER_SERVICE_URL: http://user-service:4001
+      ORDER_SERVICE_URL: http://order-service:4002
+      PAYMENT_SERVICE_URL: http://payment-service:4003
+      RATE_LIMIT_ALGORITHM: fixed-window
+      RATE_LIMIT_WINDOW_MS: 60000
+      RATE_LIMIT_MAX_REQUESTS: 5
+      PROXY_TIMEOUT_MS: 3000
+      RETRY_MAX_ATTEMPTS: 3
+      CIRCUIT_BREAKER_FAILURE_THRESHOLD: 5
+      CIRCUIT_BREAKER_RESET_TIMEOUT_MS: 10000
+    ports:
+      - '3001:3001'
+    depends_on:
+      redis:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      order-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+  gateway-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gateway-2
+    command: ['npx', 'tsx', 'src/server.ts']
+    environment:
+      GATEWAY_PORT: 3002
+      GATEWAY_INSTANCE_NAME: Gateway-2
+      REDIS_URL: redis://redis:6379
+      USER_SERVICE_URL: http://user-service:4001
+      ORDER_SERVICE_URL: http://order-service:4002
+      PAYMENT_SERVICE_URL: http://payment-service:4003
+      RATE_LIMIT_ALGORITHM: fixed-window
+      RATE_LIMIT_WINDOW_MS: 60000
+      RATE_LIMIT_MAX_REQUESTS: 5
+      PROXY_TIMEOUT_MS: 3000
+      RETRY_MAX_ATTEMPTS: 3
+      CIRCUIT_BREAKER_FAILURE_THRESHOLD: 5
+      CIRCUIT_BREAKER_RESET_TIMEOUT_MS: 10000
+    ports:
+      - '3002:3002'
+    depends_on:
+      redis:
+        condition: service_healthy
+      user-service:
+        condition: service_started
+      order-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 4. Ingress: Round-Robin Load Balancer
+  # ---------------------------------------------------------------------------
+  load-balancer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: load-balancer
+    command: ['npx', 'tsx', 'src/load-balancer/index.ts']
+    environment:
+      LB_PORT: 3000
+      GATEWAY_1_URL: http://gateway-1:3001
+      GATEWAY_2_URL: http://gateway-2:3002
+    ports:
+      - '3000:3000'
+    depends_on:
+      - gateway-1
+      - gateway-2
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 5. Observability: Prometheus
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: gateway-prometheus
+    ports:
+      - '9090:9090'
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    depends_on:
+      - gateway-1
+      - gateway-2
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # 6. Observability: Grafana
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: gateway-grafana
+    ports:
+      - '3005:3000'
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+      GF_LOG_LEVEL: 'warn'
+      GF_ANALYTICS_REPORTING_ENABLED: 'false'
+      GF_ANALYTICS_CHECK_FOR_UPDATES: 'false'
+      GF_ANALYTICS_CHECK_FOR_PLUGIN_UPDATES: 'false'
+      GF_PLUGINS_AUTO_UPDATE: 'false'
+    volumes:
+      - ./docker/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./docker/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - gateway-net
+    restart: unless-stopped
+
+networks:
+  gateway-net:
+    driver: bridge

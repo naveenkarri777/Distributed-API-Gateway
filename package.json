@@ -1,0 +1,44 @@
+{
+  "name": "distributed-api-gateway",
+  "version": "1.0.0",
+  "description": "Distributed Rate Limiter & API Gateway Proxy — built step by step",
+  "main": "dist/server.js",
+  "scripts": {
+    "dev:gateway": "node node_modules/tsx/dist/cli.mjs watch src/server.ts",
+    "dev:users": "node node_modules/tsx/dist/cli.mjs watch services/user-service/index.ts",
+    "dev:orders": "node node_modules/tsx/dist/cli.mjs watch services/order-service/index.ts",
+    "dev:payments": "node node_modules/tsx/dist/cli.mjs watch services/payment-service/index.ts",
+    "dev:services": "node node_modules/tsx/dist/cli.mjs services/run-all.ts",
+    "build": "tsc",
+    "dev:redis": "node node_modules/tsx/dist/cli.mjs services/redis-mock-server.ts",
+    "dev:gateways": "node node_modules/tsx/dist/cli.mjs src/load-balancer/run-gateways.ts",
+    "dev:lb": "node node_modules/tsx/dist/cli.mjs watch src/load-balancer/index.ts",
+    "demo:flaw": "node node_modules/tsx/dist/cli.mjs tests/flaw-demo.ts",
+    "test": "node node_modules/tsx/dist/cli.mjs tests/rateLimiter.test.ts",
+    "test:rate-limit": "node node_modules/tsx/dist/cli.mjs tests/smoke-rate-limit.ts",
+    "test:redis": "node node_modules/tsx/dist/cli.mjs tests/redis-distributed-test.ts",
+    "test:algorithms": "node node_modules/tsx/dist/cli.mjs tests/phase5-algorithms.test.ts",
+    "test:reliability": "node node_modules/tsx/dist/cli.mjs tests/phase6-reliability.test.ts",
+    "test:observability": "node node_modules/tsx/dist/cli.mjs tests/phase8-observability.test.ts",
+    "docker:up": "docker compose up --build -d",
+    "docker:logs": "docker compose logs -f load-balancer gateway-1 gateway-2",
+    "docker:logs:all": "docker compose logs -f",
+    "docker:down": "docker compose down",
+    "start": "node dist/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.2.1",
+    "http-proxy-middleware": "^3.0.7",
+    "ioredis": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.4",
+    "ts-node-dev": "^2.0.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
