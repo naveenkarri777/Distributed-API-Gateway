@@ -7,58 +7,87 @@
 ## System Architecture
 
 ```
-                                  Client Request
-                                        │
-                           http://localhost:3000/api/users/1
-                                        │
-                                        ▼
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                  INGRESS: LOAD BALANCER (:3000)                              │
-│         • Injects / propagates correlation ID: X-Request-Id: <UUID>          │
-│         • Round-Robin distribution across gateway instances                  │
-└───────────────────────────────────────┬──────────────────────────────────────┘
-                                        │
-                ┌───────────────────────┴───────────────────────┐
-                │ (Req 1, 3, 5...)                              │ (Req 2, 4, 6...)
-                ▼                                               ▼
-┌───────────────────────────────┐               ┌───────────────────────────────┐
-│       GATEWAY 1 (:3001)       │               │       GATEWAY 2 (:3002)       │
-│  • Distributed Rate Limiting  │               │  • Distributed Rate Limiting  │
-│  • Circuit Breaker (3-State)  │               │  • Circuit Breaker (3-State)  │
-│  • Idempotent Retries + Jitter│               │  • Idempotent Retries + Jitter│
-│  • AbortController Timeout    │               │  • AbortController Timeout    │
-│  • Structured Logger          │               │  • Structured Logger          │
-│  • GET /metrics (Prometheus)  │               │  • GET /metrics (Prometheus)  │
-└───────────────┬───────────────┘               └───────────────┬───────────────┘
-                │                                               │
-                ├───────────────────────┬───────────────────────┤
-                │                       │                       │
-                ▼                       ▼                       ▼
-   ┌─────────────────────────┐  ┌──────────────┐         ┌──────────────┐
-   │       REDIS (:6379)     │  │ USER SERVICE │         │ORDER SERVICE │
-   │   Shared Atomic Quota   │  │   (:4001)    │         │   (:4002)    │
-   └─────────────────────────┘  └──────────────┘         └──────────────┘
-                                       │                        │
-                                       └───────────┬────────────┘
-                                                   ▼
-                                        ┌──────────────────────┐
-                                        │   PAYMENT SERVICE    │
-                                        │       (:4003)        │
-                                        └──────────────────────┘
+                                Client (Browser / curl)
+                                           │
+                             http://localhost:3000/api/*
+                                           │
+                                           ▼
+┌─────────────────────────────────────────────────────────────────────────────────────┐
+│                             LOAD BALANCER (Port 3000)                               │
+│              Round-Robin Routing  •  X-Request-Id Correlation Injection             │
+└──────────────────────────────────────────┬──────────────────────────────────────────┘
+                                           │
+                     ┌─────────────────────┴─────────────────────┐
+                     │ (Req 1, 3, 5...)                          │ (Req 2, 4, 6...)
+                     ▼                                           ▼
+        ┌─────────────────────────┐                 ┌─────────────────────────┐
+        │    GATEWAY 1 (:3001)    │                 │    GATEWAY 2 (:3002)    │
+        │ ─────────────────────── │                 │ ─────────────────────── │
+        │ • Structured Logger     │                 │ • Structured Logger     │
+        │ • Rate Limiter Guard    │                 │ • Rate Limiter Guard    │
+        │ • Reliability Proxy:    │                 │ • Reliability Proxy:    │
+        │   - Circuit Breakers    │                 │   - Circuit Breakers    │
+        │   - Retry + Backoff     │                 │   - Retry + Backoff     │
+        │   - 3s Timeout Guard    │                 │   - 3s Timeout Guard    │
+        │ • GET /metrics Endpoint │                 │ • GET /metrics Endpoint │
+        └────────────┬────────────┘                 └────────────┬────────────┘
+                     │                                           │
+        ┌────────────┴─────────────┬─────────────────────────────┴────────────┐
+        │                          │                                          │
+        ▼ (Check Quota)            ▼ (Proxy Traffic)                          ▼ (Scrape Metrics)
+┌──────────────┐         ┌──────────────────────────────┐              ┌──────────────┐
+│ REDIS :6379  │         │    BACKEND MICROSERVICES     │              │  PROMETHEUS  │
+│ ──────────── │         │ ──────────────────────────── │              │    (:9090)   │
+│ Shared Atomic│         │ • User Service    (:4001)    │              └──────┬───────┘
+│ Quota State  │         │ • Order Service   (:4002)    │                     │ (Query)
+│ (3 Algos)    │         │ • Payment Service (:4003)    │                     ▼
+└──────────────┘         └──────────────────────────────┘              ┌──────────────┐
+                                                                       │   GRAFANA    │
+                                                                       │    (:3005)   │
+                                                                       └──────────────┘
+```
 
-═════════════════════════════ OBSERVABILITY LAYER ════════════════════════════
-                        Gateway 1 (:3001) & Gateway 2 (:3002)
-                                       │
-                                       ▼ (Scrapes /metrics every 5s)
-                            ┌─────────────────────┐
-                            │  PROMETHEUS (:9090) │
-                            └──────────┬──────────┘
-                                       │ (Datasource)
-                                       ▼
-                            ┌─────────────────────┐
-                            │   GRAFANA (:3005)   │
-                            │  Pre-Built Dashboard│
-                            └─────────────────────┘
+```mermaid
+flowchart TD
+    Client["Client (Browser / curl)"] -->|http://localhost:3000/api/*| LB["Load Balancer (:3000)<br/><i>Round-Robin • X-Request-Id</i>"]
+
+    subgraph Gateways ["API Gateway Cluster (Horizontally Scaled)"]
+        G1["Gateway 1 (:3001)<br/>• Logger • Rate Limiter<br/>• Circuit Breaker • Retry • Timeout"]
+        G2["Gateway 2 (:3002)<br/>• Logger • Rate Limiter<br/>• Circuit Breaker • Retry • Timeout"]
+    end
+
+    LB -->|Req 1, 3, 5...| G1
+    LB -->|Req 2, 4, 6...| G2
+
+    subgraph State ["Shared Distributed State"]
+        Redis[("Redis (:6379)<br/>Fixed Window / Sliding Window / Token Bucket")]
+    end
+
+    subgraph Services ["Backend Microservices"]
+        Users["User Service (:4001)<br/>/api/users/*"]
+        Orders["Order Service (:4002)<br/>/api/orders/*"]
+        Payments["Payment Service (:4003)<br/>/api/payments/*"]
+    end
+
+    subgraph Observability ["Observability Stack"]
+        Prom["Prometheus (:9090)<br/>Scrapes /metrics every 5s"]
+        Graf["Grafana (:3005)<br/>Live Dashboards"]
+        Prom --> Graf
+    end
+
+    G1 -.->|Sync Quota| Redis
+    G2 -.->|Sync Quota| Redis
+
+    G1 -->|Forward /api/users| Users
+    G1 -->|Forward /api/orders| Orders
+    G1 -->|Forward /api/payments| Payments
+
+    G2 -->|Forward /api/users| Users
+    G2 -->|Forward /api/orders| Orders
+    G2 -->|Forward /api/payments| Payments
+
+    Prom -.->|Scrape :3001/metrics| G1
+    Prom -.->|Scrape :3002/metrics| G2
 ```
 
 ---
